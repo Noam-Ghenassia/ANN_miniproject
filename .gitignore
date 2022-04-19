@@ -1,0 +1,22 @@
+# ===================================== #
+# Python generated 			#
+# ===================================== #
+__pycache__/
+venvs/
+tools/
+tmp/
+scripts/*.lprof
+scripts/out.txt
+scripts/*.sh
+graph/
+meeting*
+
+# ===================================== #
+# PyCharm generated 			#
+# ===================================== #
+.idea/
+
+# ===================================== #
+# Jupyter Notebook generated 		#
+# ===================================== #
+.ipynb_checkpoints/
