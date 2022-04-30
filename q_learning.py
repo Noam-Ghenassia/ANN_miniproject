@@ -102,6 +102,47 @@ class Q_learner:
 
         return end
 
+    def reverse_player(self, player):
+        """
+        get the reverse player from a given player.
+        :param player: player from which you want to obtain the reverse
+        :return: reversed player
+        """
+        return 'X' if player == 'O' else 'O'
+
+    def self_update(self, env, previous_state, previous_action):
+        """
+        make a move against itself in the TicTacToe Environment based on the Q-learning algorithm, update the Q-values.
+        :param env: TicTacToe Environment
+        :param previous_state: previous state in order to update properly the previous player
+        :param previous_action: previous action in order to update properly the previous player
+        :return: previous state and previous action for the next iteration
+        """
+        # play
+        state = env.grid.copy()
+        action = self.epsilon_greedy(state)
+        new_state, end, winner = env.step(action)
+        reward = env.reward(self.player)
+        reward_for_previous = env.reward(self.reverse_player(self.player))
+        if end:  # update as the current player
+            # update as current player the Q-values
+            Q_s = self.get_Q(state)
+            Q_new_s = self.get_Q(new_state)
+            max_value_Q_new_s = max(Q_new_s.values()) if len(Q_new_s.keys()) > 0 else 0
+            new_Q_s_a = Q_s[action] + self.alpha * (reward + self.gamma * max_value_Q_new_s - Q_s[action])
+            self.set_Q(state, action, new_Q_s_a)
+
+        if previous_state is not None and previous_action is not None:  # at start no previous state or action so no update
+            # update as previous player Q-values for their previous action
+            previous_Q_s = self.get_Q(previous_state)
+            previous_Q_new_s = self.get_Q(new_state)
+            max_value_previous_Q_new_s = max(previous_Q_new_s.values()) if len(previous_Q_new_s.keys()) > 0 else 0
+            new_previous_Q_s_a = previous_Q_s[previous_action] + self.alpha * (
+                        reward_for_previous + self.gamma * max_value_previous_Q_new_s - previous_Q_s[previous_action])
+            self.set_Q(previous_state, previous_action, new_previous_Q_s_a)
+
+        return state, action
+
     def train(self, number_game, opponent_epsilon):
         """
         train the Q-learning against an opponent with given epsilon over a number of games, roles are flipped
@@ -126,6 +167,31 @@ class Q_learner:
                 else:  # opponent plays
                     opponent_action = opponent.act(env.grid)
                     env.step(opponent_action)
+
+            rewards.append(env.reward(self.player))
+
+        return rewards
+
+    def self_train(self, number_game):
+        """
+        train the Q-learning against itself over a number of games.
+        :param number_game: number of games to be played
+        """
+        env = TictactoeEnv()
+        players = ['X', 'O']
+
+        rewards = []
+
+        for i in range(number_game):
+            # initialize game
+            env.reset()
+            j = 0
+            previous_state = None
+            previous_action = None
+            while not env.end:
+                self.player = players[j % 2]
+                previous_state, previous_action = self.self_update(env, previous_state, previous_action)
+                j += 1
 
             rewards.append(env.reward(self.player))
 
@@ -237,6 +303,47 @@ class Q_learner_exploration:
 
         return end
 
+    def reverse_player(self, player):
+        """
+        get the reverse player from a given player.
+        :param player: player from which you want to obtain the reverse
+        :return: reversed player
+        """
+        return 'X' if player == 'O' else 'O'
+
+    def self_update(self, env, iteration, previous_state, previous_action):
+        """
+        make a move against itself in the TicTacToe Environment based on the Q-learning algorithm, update the Q-values.
+        :param env: TicTacToe Environment
+        :param iteration: episode iterations to decrease exploration level
+        :param previous_state: previous state in order to update properly the previous player
+        :param previous_action: previous action in order to update properly the previous player
+        :return: previous state and previous action for the next iteration
+        """
+        # play
+        state = env.grid.copy()
+        action = self.epsilon_greedy(state, iteration)
+        new_state, end, winner = env.step(action)
+        reward = env.reward(self.player)
+        reward_for_previous = env.reward(self.reverse_player(self.player))
+        if end:  # update as the current player
+            # update as current player the Q-values
+            Q_s = self.get_Q(state)
+            Q_new_s = self.get_Q(new_state)
+            max_value_Q_new_s = max(Q_new_s.values()) if len(Q_new_s.keys()) > 0 else 0
+            new_Q_s_a = Q_s[action] + self.alpha * (reward + self.gamma * max_value_Q_new_s - Q_s[action])
+            self.set_Q(state, action, new_Q_s_a)
+
+        if previous_state is not None and previous_action is not None:  # at start no previous state or action so no update
+            # update as previous player Q-values for their previous action
+            previous_Q_s = self.get_Q(previous_state)
+            previous_Q_new_s = self.get_Q(new_state)
+            max_value_previous_Q_new_s = max(previous_Q_new_s.values()) if len(previous_Q_new_s.keys()) > 0 else 0
+            new_previous_Q_s_a = previous_Q_s[previous_action] + self.alpha * (reward_for_previous + self.gamma * max_value_previous_Q_new_s - previous_Q_s[previous_action])
+            self.set_Q(previous_state, previous_action, new_previous_Q_s_a)
+
+        return state, action
+
     def train(self, number_game, opponent_epsilon):
         """
         train the Q-learning against an opponent with given epsilon over a number of games, roles are flipped
@@ -262,6 +369,31 @@ class Q_learner_exploration:
                 else:  # opponent plays
                     opponent_action = opponent.act(env.grid)
                     env.step(opponent_action)
+
+            rewards.append(env.reward(self.player))
+
+        return rewards
+
+    def self_train(self, number_game):
+        """
+        train the Q-learning against itself over a number of games.
+        :param number_game: number of games to be played
+        """
+        env = TictactoeEnv()
+        players = ['X', 'O']
+
+        rewards = []
+
+        for i in range(number_game):
+            # initialize game
+            env.reset()
+            j = 0
+            previous_state = None
+            previous_action = None
+            while not env.end:
+                self.player = players[j % 2]
+                previous_state, previous_action = self.self_update(env, i, previous_state, previous_action)
+                j += 1
 
             rewards.append(env.reward(self.player))
 
