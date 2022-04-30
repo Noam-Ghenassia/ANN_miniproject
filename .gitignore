@@ -10,6 +10,7 @@ scripts/out.txt
 scripts/*.sh
 graph/
 meeting*
+.vscode/
 
 # ===================================== #
 # PyCharm generated 			#
