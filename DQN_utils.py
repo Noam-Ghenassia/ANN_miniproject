@@ -31,23 +31,23 @@ class ReplayMemory(object):
 
 class Q_net(nn.Module):
   
-    def __init__(self, structure=(128, 128)):
+    def __init__(self, structure=(128, 128), use_batch_norm=False):
         super(Q_net, self).__init__()
         self.structure = structure
 
         self.layer_list = torch.nn.ModuleList()
 
-        self.layer_list.append(nn.Sequential(nn.Linear(2, 128, bias=False)))
+        self.layer_list.append(nn.Sequential(nn.Linear(9, 128, bias=False)))
 
         for ii in range(len(self.structure)):
             self.layer_list.append(
-                self.hidden_layer(self.structure[ii] , self.structure[ii], use_batch_norm=False)
+                self.hidden_layer(self.structure[ii] , self.structure[ii], use_batch_norm)
             )
           
         self.layer_list.append(nn.Sequential(nn.Linear(128, 9, bias=False)))
 
 
-    def hidden_layer(self,input, output, use_batch_norm=False):
+    def hidden_layer(self,input, output, use_batch_norm):
         linear = nn.Linear(input, output, bias=True)
         relu = nn.ReLU()
         bn = nn.BatchNorm1d(output)
@@ -70,10 +70,11 @@ class DQ_learner():
                     buffer_size=10000,
                     target_network_update=500,
                     batch_size=500, lr=5e-4,
-                    seed=random.random()):
+                    seed=random.random(),
+                    use_adam=False):
 
         self.gamma=gamma
-        self.epsilon=np.max(eps_min, eps_max)
+        self.epsilon=np.maximum(eps_min, eps_max)
         self.eps_min, self.eps_max = eps_min, eps_max
         self.target_network_update=target_network_update
         self.batch_size=batch_size
@@ -81,39 +82,56 @@ class DQ_learner():
 
         random.seed(seed)
         self.memory = ReplayMemory(buffer_size)
-        self.policy_net = Q_net()
-        self.target_net = Q_net()
-        #self.policy_optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=self.lr)
-        self.optimizer = optim.RMSprop(self.policy_net.parameters())
+        self.policy_net = Q_net().double()
+        self.target_net = Q_net().double()
+        if use_adam:
+            self.policy_optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=self.lr)
+        else:
+            self.optimizer = optim.RMSprop(self.policy_net.parameters())
     
     def update_epsilon(self, eps_min, eps_max, episode):
-        self.epsilon = np.max(eps_min, eps_max*(1-(1/episode)))
+        self.epsilon = np.maximum(eps_min, eps_max*(1-(1/(episode+1))))
+
     
     def get_state(self, env):
-        return torch.tensor(env.observe[0])
+        return torch.tensor(env.observe()[0])
+
     
     def epsilon_greedy(self, action, env):
+        """This method implements the epsilon greedy policy : it returns either the action
+        chosen by the agent (wirh probability epsilon), or an action chosen randomly."""
         if random.random() > self.epsilon:
-            return action
+            return torch.tensor([action])
         else:
-            available_actions = (torch.flatten(env.observe[0])==0).nonzero().tolist()
-            return random.choice(available_actions)
+            available_actions = self.available_actions(env)
+            return torch.tensor(random.choice(available_actions))
 
-    def is_action_available(self, env, action):
-        return action in (torch.flatten(torch.sum(env.observe[0]))==0).nonzero()
+    
+    def available_actions(self, env):
+        """This function returns the list of currrently available actions given the current
+        state of the environment."""
+        return (torch.flatten(torch.tensor(env.observe()[0]))==0).nonzero().tolist()
+
     
     def update_nets(self, episode):
+        """This function updates both the policy network and (when needed) the target network.
+        the target network is copied from the policy network with a frequency determined by
+        the class attribute target_network_update.
+        The optimizer is either RMSProp or adam (depending on the corresponding class attribute),
+        and optimizes the error derived from the Bellman equation for Q-learning. For the final
+        state of an episode, the error is zero when the prediction matches the reward."""
         if len(self.memory) < self.batch_size:
             return
         else:
             transitions = self.memory.sample(self.batch_size)
+            # transpose batch of transitions -> transition of batche arrays
             batch = Transition(*zip(*transitions))
-            batch_state = torch.tensor(batch.state)
-            batch_action = torch.tensor(batch.action)
+            batch_state = tuple_of_tensors_to_tensor(batch.state)
+            batch_action = tuple_of_tensors_to_tensor(batch.action)
             batch_reward = torch.tensor(batch.reward)
 
             # non final next states :
-            batch_next_state = torch.tensor([ns for ns in batch.next_state if ns is not None])
+            batch_next_state = torch.stack([ns for ns in batch.next_state if ns is not None], dim=1)
 
             # indices of final states :
             final_indices = torch.tensor([ind for ind in range(len(batch.next_state)) if batch.next_state[ind] == None])
@@ -129,10 +147,13 @@ class DQ_learner():
             # for final states, the target is simply the reward :
             targets[final_states_mask] = batch_reward[final_indices]
 
-            # for non-final states, the target is given by the Bellman equation :
-            preds = torch.max(self.target_net(batch_state[non_final_states_mask]))      # use torch.amax to take max along output dim
-            # batch reward added only for completeness, since in non final states there are noe rewards.
-            targets[non_final_states_mask] = self.gamma*preds + batch_reward
+            # for non-final states, the target is given by the Bellman equation,
+            # where predictions are mmade with the target network to stabilize targets :
+            preds = torch.max(self.target_net(torch.t(batch_next_state).double()))      # use torch.amax to take max along output dim
+
+            # batch reward ommited, since in non final states rewards are zero :
+            with torch.no_grad():
+                targets[non_final_states_mask] = self.gamma*preds
 
             # predictions of the policy network :
             state_action_values = self.policy_net(batch_state).gather(1, batch_action)
@@ -142,48 +163,51 @@ class DQ_learner():
             loss = criterion(state_action_values, targets.unsqueeze(1))
             self.optimizer.zero_grad()
             loss.backward()
-            for param in self.policy_net.parameters():
-                param.grad.data.clamp_(-1, 1)
-            self.optimizer.step()  
+            #for param in self.policy_net.parameters():
+            #    param.grad.data.clamp_(-1, 1)              # WHY SHOULD WE CLAMP THE GRADIENTS ?? ####################3
+            self.optimizer.step()
 
 
-            # Update the target network, copying all weights and biases in DQN
+            # Update the target network by making it the same as the policy network :
             if episode % self.target_network_update == 0:
                 self.target_net.load_state_dict(self.policy_net.state_dict())
+            
+            return loss
 
 
 
-    def play_and_learn(self, env, player, actions_taken):
+    def play_and_learn(self, env, player, episode):
 
         # use policy network to predict action, and apply (with epsilon-greedy policy).
         # collect transition and add to replay_buffer
-        """state = torch.flatten(torch.sum(env.observe[0]))"""     # easier than 3*3*2 tensor...
-        state = torch.flatten(env.observe[0])
-        predicted_action = self.policy_net(state)               # torch.max ?
+        state = torch.flatten(torch.from_numpy(env.observe()[0]).double())                   # easier than 3*3*2 tensor...
+        predicted_action = torch.argmax(self.policy_net(state))
         action = self.epsilon_greedy(predicted_action, env)
-        if self.is_action_available(env, action):
-            env.step(action)
-            if env.observe[1]:
+        if [action] in self.available_actions(env):
+            env.step(action.item())
+            if env.observe()[1]:
                 next_state = None
             else:
-                next_state = torch.flatten(env.observe[0])
+                next_state = torch.flatten(torch.from_numpy(env.observe()[0]))
             reward = env.reward(player=player)
         else:
             env.reset()
             reward = -1
             next_state = None
         #transition = Transition(state, action, next_state, reward)
-        self.memory.push(state, action, next_state, reward)
+        self.memory.push((state, action, next_state, reward))
 
         # update policy and target networks according to replay buffer
-        self.update_nets(actions_taken)
+        #self.update_nets(actions_taken)
+        loss = self.update_nets(episode=episode)
+        return loss
 
     def train(self, number_games, opponent_epsilon):
 
         env = TictactoeEnv()
         players = ['X', 'O']
         #actions_taken = 0
-
+        losses = []
         for game in range(number_games):
             env.reset()
             player = players[game % 2]
@@ -192,54 +216,14 @@ class DQ_learner():
             while not env.end:
                 if env.current_player == player:
                     self.update_epsilon(self.eps_min, self.eps_max, game)
-                    self.play_and_learn(env, player, game)
-                    #actions_taken += 1
+                    loss = self.play_and_learn(env, player, game)
+                    if game % 10 == 0:
+                        losses.append(loss)
                 else:
                     opponent_action = opponent.act(env.grid)
                     env.step(opponent_action)
-    
+        
+        return losses
 
-    """def optimize_model(self):
-        if len(self.memory) < self.batch_size:
-            return
-        transitions = self.memory.sample(self.batch_size)
-        # Transpose the batch (see https://stackoverflow.com/a/19343/3343043 for
-        # detailed explanation). This converts batch-array of Transitions
-        # to Transition of batch-arrays.
-        batch = Transition(*zip(*transitions))
-
-        # Compute a mask of non-final states and concatenate the batch elements
-        # (a final state would've been the one after which simulation ended)
-        non_final_mask = torch.tensor(tuple(map(lambda s: s is not None,
-                                            batch.next_state)), device=device, dtype=torch.bool)
-        non_final_next_states = torch.cat([s for s in batch.next_state
-                                                    if s is not None])
-        state_batch = torch.cat(batch.state)
-        action_batch = torch.cat(batch.action)
-        reward_batch = torch.cat(batch.reward)
-
-        # Compute Q(s_t, a) - the model computes Q(s_t), then we select the
-        # columns of actions taken. These are the actions which would've been taken
-        # for each batch state according to policy_net
-        state_action_values = policy_net(state_batch).gather(1, action_batch)
-
-        # Compute V(s_{t+1}) for all next states.
-        # Expected values of actions for non_final_next_states are computed based
-        # on the "older" target_net; selecting their best reward with max(1)[0].
-        # This is merged based on the mask, such that we'll have either the expected
-        # state value or 0 in case the state was final.
-        next_state_values = torch.zeros(BATCH_SIZE, device=device)
-        next_state_values[non_final_mask] = target_net(non_final_next_states).max(1)[0].detach()
-        # Compute the expected Q values
-        expected_state_action_values = (next_state_values * GAMMA) + reward_batch
-
-        # Compute Huber loss
-        criterion = nn.SmoothL1Loss()
-        loss = criterion(state_action_values, expected_state_action_values.unsqueeze(1))
-
-        # Optimize the model
-        optimizer.zero_grad()
-        loss.backward()
-        for param in policy_net.parameters():
-            param.grad.data.clamp_(-1, 1)
-        optimizer.step()"""
+def tuple_of_tensors_to_tensor(tuple_of_tensors):
+    return  torch.stack(list(tuple_of_tensors), dim=0)
