@@ -82,8 +82,8 @@ class DQ_learner():
 
         random.seed(seed)
         self.memory = ReplayMemory(buffer_size)
-        self.policy_net = Q_net().double()
-        self.target_net = Q_net().double()
+        self.policy_net = Q_net().double().to(device)
+        self.target_net = Q_net().double().to(device)
         if use_adam:
             self.policy_optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=self.lr)
         else:
@@ -126,12 +126,12 @@ class DQ_learner():
             transitions = self.memory.sample(self.batch_size)
             # transpose batch of transitions -> transition of batche arrays
             batch = Transition(*zip(*transitions))
-            batch_state = tuple_of_tensors_to_tensor(batch.state)
-            batch_action = tuple_of_tensors_to_tensor(batch.action)
-            batch_reward = torch.tensor(batch.reward)
+            batch_state = tuple_of_tensors_to_tensor(batch.state).to(device)
+            batch_action = tuple_of_tensors_to_tensor(batch.action).to(device)
+            batch_reward = torch.tensor(batch.reward).type(torch.double).to(device)
 
             # non final next states :
-            batch_next_state = torch.stack([ns for ns in batch.next_state if ns is not None], dim=1)
+            batch_next_state = torch.stack([ns for ns in batch.next_state if ns is not None], dim=1).to(device)
 
             # indices of final states :
             final_indices = torch.tensor([ind for ind in range(len(batch.next_state)) if batch.next_state[ind] == None])
@@ -142,7 +142,7 @@ class DQ_learner():
             non_final_states_mask = ~final_states_mask
 
             # initialize targets tensor :
-            targets = torch.zeros_like(final_states_mask).type(torch.LongTensor)
+            targets = torch.zeros_like(final_states_mask).type(torch.double).to(device)
 
             # for final states, the target is simply the reward :
             targets[final_states_mask] = batch_reward[final_indices]
@@ -156,15 +156,15 @@ class DQ_learner():
                 targets[non_final_states_mask] = self.gamma*preds
 
             # predictions of the policy network :
-            state_action_values = self.policy_net(batch_state).gather(1, batch_action)
+            state_action_values = self.policy_net(batch_state).gather(1, batch_action).to(device)
 
             # optimization step of policy network :
             criterion = nn.SmoothL1Loss()
             loss = criterion(state_action_values, targets.unsqueeze(1))
             self.optimizer.zero_grad()
             loss.backward()
-            #for param in self.policy_net.parameters():
-            #    param.grad.data.clamp_(-1, 1)              # WHY SHOULD WE CLAMP THE GRADIENTS ?? ####################3
+            for param in self.policy_net.parameters():
+                param.grad.data.clamp_(-1, 1)              # WHY SHOULD WE CLAMP THE GRADIENTS ?? ####################3
             self.optimizer.step()
 
 
@@ -177,10 +177,12 @@ class DQ_learner():
 
 
     def play_and_learn(self, env, player, episode):
+        """This function allows to perform a single learning step : the agent plays
+        according to the epsilon-greedy policy, and updates the policy and target networks."""
 
         # use policy network to predict action, and apply (with epsilon-greedy policy).
         # collect transition and add to replay_buffer
-        state = torch.flatten(torch.from_numpy(env.observe()[0]).double())                   # easier than 3*3*2 tensor...
+        state = torch.flatten(torch.from_numpy(env.observe()[0]).double().to(device))                   # easier than 3*3*2 tensor...
         predicted_action = torch.argmax(self.policy_net(state))
         action = self.epsilon_greedy(predicted_action, env)
         if [action] in self.available_actions(env):
@@ -194,20 +196,29 @@ class DQ_learner():
             env.reset()
             reward = -1
             next_state = None
-        #transition = Transition(state, action, next_state, reward)
         self.memory.push((state, action, next_state, reward))
 
         # update policy and target networks according to replay buffer
-        #self.update_nets(actions_taken)
         loss = self.update_nets(episode=episode)
         return loss
 
-    def train(self, number_games, opponent_epsilon):
+    def train(self, number_games, opponent_epsilon, env):
+        """This function defines the training loop. It iteratively makes
+        the agent and the opponent play, while the agent is also updated
+        at each move.
+        
+        Args:
+            number_games (int): the number of games (or episodes) in the training loop.
+            opponnent_epsilon (float): the probability for the opponent to play according
+            to the optimal policy.
+            
+        Return:
+            losses (list): A list containing loss values regularly recorded."""
 
-        env = TictactoeEnv()
         players = ['X', 'O']
-        #actions_taken = 0
         losses = []
+        rewards = []
+        actions_taken = 0
         for game in range(number_games):
             env.reset()
             player = players[game % 2]
@@ -217,13 +228,17 @@ class DQ_learner():
                 if env.current_player == player:
                     self.update_epsilon(self.eps_min, self.eps_max, game)
                     loss = self.play_and_learn(env, player, game)
-                    if game % 10 == 0:
+                    actions_taken += 1
+                    #if game % 1 == 0:
+                    if actions_taken % 1 == 0:
                         losses.append(loss)
                 else:
                     opponent_action = opponent.act(env.grid)
                     env.step(opponent_action)
+                if env.end:
+                    rewards.append(env.reward(player))
         
-        return losses
+        return losses, rewards
 
 def tuple_of_tensors_to_tensor(tuple_of_tensors):
     return  torch.stack(list(tuple_of_tensors), dim=0)
