@@ -1,3 +1,4 @@
+from matplotlib.style import available
 import numpy as np
 import random
 import torch
@@ -37,7 +38,8 @@ class Q_net(nn.Module):
 
         self.layer_list = torch.nn.ModuleList()
 
-        self.layer_list.append(nn.Sequential(nn.Linear(9, 128, bias=False)))
+        #self.layer_list.append(nn.Sequential(nn.Linear(9, 128, bias=False)))
+        self.layer_list.append(nn.Sequential(nn.Linear(18, 128, bias=False)))
 
         for ii in range(len(self.structure)):
             self.layer_list.append(
@@ -69,7 +71,7 @@ class DQ_learner():
     def __init__(self, gamma=.99, eps_min=.1, eps_max=.8,
                     buffer_size=10000,
                     target_network_update=500,
-                    batch_size=500, lr=5e-4,
+                    batch_size=64, lr=5e-4, # 5e-4
                     seed=random.random(),
                     use_adam=False):
 
@@ -89,28 +91,40 @@ class DQ_learner():
         else:
             self.optimizer = optim.RMSprop(self.policy_net.parameters())
     
-    def update_epsilon(self, eps_min, eps_max, episode):
-        self.epsilon = np.maximum(eps_min, eps_max*(1-(1/(episode+1))))
+    def update_epsilon(self, episode):
+        self.epsilon = np.maximum(self.eps_min, self.eps_max*(1-(1/(episode+1))))
 
     
-    def get_state(self, env):
-        return torch.tensor(env.observe()[0])
+    def get_state(self, env, player):
+        # if player == 'X':
+        #     return env.grid.copy()
+        # else:
+        #     return (-1)*env.grid.copy()
+        grid = env.grid.copy()
+        if player == 'X':
+           return np.stack([(grid - np.ones_like(grid)==0)*1, (grid + np.ones_like(grid)==0)*1]).flatten()
+        else:
+           return np.stack([(grid + np.ones_like(grid)==0)*1, (grid - np.ones_like(grid)==0)*1]).flatten()
+
 
     
-    def epsilon_greedy(self, action, env):
+    def epsilon_greedy(self, action, env, player):
         """This method implements the epsilon greedy policy : it returns either the action
         chosen by the agent (wirh probability epsilon), or an action chosen randomly."""
         if random.random() > self.epsilon:
             return torch.tensor([action])
         else:
-            available_actions = self.available_actions(env)
+            available_actions = self.available_actions(env, player)
             return torch.tensor(random.choice(available_actions))
 
     
-    def available_actions(self, env):
+    def available_actions(self, env, player):
         """This function returns the list of currrently available actions given the current
         state of the environment."""
-        return (torch.flatten(torch.tensor(env.observe()[0]))==0).nonzero().tolist()
+        return (torch.tensor(env.grid.copy().flatten())==0).nonzero().tolist()
+    
+    def update_target_network(self):
+        self.target_net.load_state_dict(self.policy_net.state_dict())
 
     
     def update_nets(self, episode):
@@ -145,11 +159,12 @@ class DQ_learner():
             targets = torch.zeros_like(final_states_mask).type(torch.double).to(device)
 
             # for final states, the target is simply the reward :
+
             targets[final_states_mask] = batch_reward[final_indices]
 
             # for non-final states, the target is given by the Bellman equation,
             # where predictions are mmade with the target network to stabilize targets :
-            preds = torch.max(self.target_net(torch.t(batch_next_state).double()))      # use torch.amax to take max along output dim
+            preds = torch.max(self.target_net(torch.t(batch_next_state).double()))
 
             # batch reward ommited, since in non final states rewards are zero :
             with torch.no_grad():
@@ -164,39 +179,47 @@ class DQ_learner():
             self.optimizer.zero_grad()
             loss.backward()
             for param in self.policy_net.parameters():
-                param.grad.data.clamp_(-1, 1)              # WHY SHOULD WE CLAMP THE GRADIENTS ?? ####################3
+                param.grad.data.clamp_(-1., 1.)
             self.optimizer.step()
 
 
             # Update the target network by making it the same as the policy network :
             if episode % self.target_network_update == 0:
-                self.target_net.load_state_dict(self.policy_net.state_dict())
+                self.update_target_network()
+                #self.target_net.load_state_dict(self.policy_net.state_dict())
             
             return loss
 
 
 
-    def play_and_learn(self, env, player, episode):
+    def play_and_learn(self, env, player, opponent, episode):
         """This function allows to perform a single learning step : the agent plays
         according to the epsilon-greedy policy, and updates the policy and target networks."""
 
         # use policy network to predict action, and apply (with epsilon-greedy policy).
         # collect transition and add to replay_buffer
-        state = torch.flatten(torch.from_numpy(env.observe()[0]).double().to(device))                   # easier than 3*3*2 tensor...
+        state = torch.flatten(torch.from_numpy(self.get_state(env, player)).double().to(device))
         predicted_action = torch.argmax(self.policy_net(state))
-        action = self.epsilon_greedy(predicted_action, env)
-        if [action] in self.available_actions(env):
+        action = self.epsilon_greedy(predicted_action, env, player)
+        if [action] in self.available_actions(env, player):
             env.step(action.item())
-            if env.observe()[1]:
+            if env.end:    # game is over
                 next_state = None
             else:
-                next_state = torch.flatten(torch.from_numpy(env.observe()[0]))
+                # first have the opponent play so that the next state is one where the player plays :
+                opponent_action = opponent.act(env.grid)
+                env.step(opponent_action)
+                if env.end:    # game is over
+                    next_state = None
+                else:       # observe new state
+                    next_state = torch.flatten(torch.from_numpy(self.get_state(env, player)))
             reward = env.reward(player=player)
         else:
             env.reset()
             reward = -1
             next_state = None
         self.memory.push((state, action, next_state, reward))
+
 
         # update policy and target networks according to replay buffer
         loss = self.update_nets(episode=episode)
@@ -219,13 +242,19 @@ class DQ_learner():
         losses = []
         rewards = []
         actions_taken = 0
+        #self.update_target_network()
         for game in range(number_games):
             env.reset()
             player = players[game % 2]
             opponent = OptimalPlayer(epsilon=opponent_epsilon, player=players[(game + 1) % 2])
+            ####################
+            if game % 2 == 1:
+                opponent_action = opponent.act(env.grid)
+                env.step(opponent_action)
+            ####################
 
             while not env.end:
-                if env.current_player == player:
+                """if env.current_player == player:
                     self.update_epsilon(self.eps_min, self.eps_max, game)
                     loss = self.play_and_learn(env, player, game)
                     actions_taken += 1
@@ -235,6 +264,12 @@ class DQ_learner():
                 else:
                     opponent_action = opponent.act(env.grid)
                     env.step(opponent_action)
+                if env.end:
+                    rewards.append(env.reward(player))"""
+                self.update_epsilon(game)
+                loss = self.play_and_learn(env, player, opponent, game)
+                if actions_taken % 10 == 0:
+                        losses.append(loss)
                 if env.end:
                     rewards.append(env.reward(player))
         
