@@ -115,7 +115,7 @@ class DQ_learner():
             return torch.tensor([action])
         else:
             available_actions = self.available_actions(env, player)
-            return torch.tensor(random.choice(available_actions))
+            return torch.tensor(random.choice(available_actions))       
 
     
     def available_actions(self, env, player):
@@ -174,7 +174,8 @@ class DQ_learner():
             state_action_values = self.policy_net(batch_state).gather(1, batch_action).to(device)
 
             # optimization step of policy network :
-            criterion = nn.SmoothL1Loss()
+            #criterion = nn.SmoothL1Loss()
+            criterion = nn.HuberLoss()       
             loss = criterion(state_action_values, targets.unsqueeze(1))
             self.optimizer.zero_grad()
             loss.backward()
@@ -201,6 +202,7 @@ class DQ_learner():
         state = torch.flatten(torch.from_numpy(self.get_state(env, player)).double().to(device))
         predicted_action = torch.argmax(self.policy_net(state))
         action = self.epsilon_greedy(predicted_action, env, player)
+        took_available_action = True
         if [action] in self.available_actions(env, player):
             env.step(action.item())
             if env.end:    # game is over
@@ -215,15 +217,16 @@ class DQ_learner():
                     next_state = torch.flatten(torch.from_numpy(self.get_state(env, player)))
             reward = env.reward(player=player)
         else:
-            env.reset()
+            #env.reset()
             reward = -1
             next_state = None
+            took_available_action = False
         self.memory.push((state, action, next_state, reward))
 
 
         # update policy and target networks according to replay buffer
         loss = self.update_nets(episode=episode)
-        return loss
+        return loss, took_available_action
 
     def train(self, number_games, opponent_epsilon, env):
         """This function defines the training loop. It iteratively makes
@@ -247,31 +250,23 @@ class DQ_learner():
             env.reset()
             player = players[game % 2]
             opponent = OptimalPlayer(epsilon=opponent_epsilon, player=players[(game + 1) % 2])
-            ####################
+
+            #### HAVE THE OPPONENT PLAY FIRST IF IT IS HIS TURN TO START ####
             if game % 2 == 1:
                 opponent_action = opponent.act(env.grid)
                 env.step(opponent_action)
-            ####################
+            #################################################################
 
-            while not env.end:
-                """if env.current_player == player:
-                    self.update_epsilon(self.eps_min, self.eps_max, game)
-                    loss = self.play_and_learn(env, player, game)
-                    actions_taken += 1
-                    #if game % 1 == 0:
-                    if actions_taken % 1 == 0:
-                        losses.append(loss)
-                else:
-                    opponent_action = opponent.act(env.grid)
-                    env.step(opponent_action)
-                if env.end:
-                    rewards.append(env.reward(player))"""
+            took_available_action = True
+            while not env.end and took_available_action:
                 self.update_epsilon(game)
-                loss = self.play_and_learn(env, player, opponent, game)
+                loss, took_available_action = self.play_and_learn(env, player, opponent, game)
                 if actions_taken % 10 == 0:
                         losses.append(loss)
                 if env.end:
                     rewards.append(env.reward(player))
+                if not took_available_action:
+                    rewards.append(-1)
         
         return losses, rewards
 
