@@ -1,3 +1,4 @@
+from hmac import new
 from matplotlib.style import available
 import numpy as np
 import random
@@ -236,7 +237,7 @@ class DQ_learner():
         if [action] in self.available_actions(env):
             env.step(action.item())
             if env.end:    # game is over
-                next_state = None
+                next_state = None               #####  MAYBE TRY TO PUT THE WINNING STATE IN THE TRANSITION WHEN THE LAST ACTION IS 2 STEPS BEHIND (that is, when we loose)
             else:
                 # if game has not ended then opponent plays to get to the learner turn
                 opponent_action = opponent.act(env.grid)
@@ -314,37 +315,63 @@ class DQ_learner():
         predicted_action = torch.argmax(self.policy_net(state))
         return predicted_action
 
-"""class self_learner(DQ_learner):
+class SelfLearner(DQ_learner):
 
-    def get_state(env, player):
-        grid = env.grid.copy()
-        if player == 'X':
-            return grid
-        else:
-            return (-1)*grid
-    
-    def play_and_learn(self, env, player, episode):
-        pass
+    def switch_current_player(self, player):
+        return 'X' if player=='O' else 'X'
 
     def train(self, number_games, env, evaluate=False):
 
-        players = ['X', 'O']
         Mopt = []
         Mrand = []
+        losses = []
+        rewards_X = []
+        rewards_O = []
 
         for game in range(number_games):
             env.reset()
-            player1 = players[game % 2]
-            player2 = players[(game + 1) % 2]
+            current_player = 'X'
 
-            player_1_took_available_action = True
-            player_2_took_available_action = True
+            last_state = None
+            last_action = None
 
-            if player1 == 'x':
-                while not env.end:
-                    self.update_epsilon(game)
-                    player_1_took_available_action = self.play_and_learn(env, player1, game)
-                    if not player_1_took_available_action:"""
+            while not env.end:
+                state = self.get_state(env)
+                action = self.act(env)
+                if action.item() not in np.where(np.abs(env.grid).flatten()<.5)[0]:     # action is not available
+                    self.memory.push((state, action, None, -1))
+                    break
+                else:
+                    env.step(action.item())
+                    new_state = self.get_state(env)
+                    if env.end:
+                        self.memory.push(last_state, last_action, new_state, env.reward(current_player))
+                        self.memory.push(state, action, None, env.reward(self.switch_current_player(current_player)))
+                        break
+                    
+                    if last_state is not None:
+                        self.memory.push(last_state, last_action, new_state, 0)
+
+                last_state = state
+                last_action = action
+                current_player = self.switch_current_player(current_player)
+
+                losses.append(self.update_nets(game))
+            
+            rewards_X.append(env.reward(player='x'))
+            rewards_O.append(env.reward(player='O'))
+
+            if game % 250 == 0 and evaluate:
+                Mopt.append(M_opt(self, env))
+                Mrand.append(M_rand(self, env))
+        
+        if evaluate:
+            return losses, rewards_X, rewards_O, Mopt, Mrand
+        else:
+            return losses, rewards_X, rewards_O
+
+                
+
 
 
 ######################################################################################################
