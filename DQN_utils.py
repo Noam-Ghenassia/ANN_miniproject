@@ -317,7 +317,7 @@ class DQ_learner():
 class SelfLearner(DQ_learner):
 
     def switch_current_player(self, player):
-        return 'X' if player=='O' else 'X'
+        return 'X' if player=='O' else 'O'
 
     def train(self, number_games, env, evaluate=False):
 
@@ -347,8 +347,10 @@ class SelfLearner(DQ_learner):
                     env.step(action.item())
                     new_state = torch.flatten(torch.from_numpy(self.get_state(env)).double().to(device))
                     if env.end:
-                        self.memory.push((last_state, last_action, new_state, env.reward(current_player)))
-                        self.memory.push((state, action, None, env.reward(self.switch_current_player(current_player))))
+                        #self.memory.push((last_state, last_action, new_state, env.reward(current_player)))
+                        #self.memory.push((state, action, None, env.reward(self.switch_current_player(current_player))))
+                        self.memory.push((last_state, last_action, None, env.reward(self.switch_current_player(current_player))))
+                        self.memory.push((state, action, None, env.reward(current_player)))
                         break
                     
                     if last_state is not None:
