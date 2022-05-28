@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from collections import namedtuple, deque
+import matplotlib.pyplot as plt
 
 from tic_env import TictactoeEnv, OptimalPlayer
 
@@ -144,8 +145,6 @@ class DQ_learner():
                 target=torch.tensor(last_transition.reward[0]).double().to(device)
 
             else:
-                a = torch.t(last_transition.next_state[0])
-                b  = self.target_net(torch.t(last_transition.next_state[0]).double().to(device))
                 target= self.gamma*torch.max(self.target_net(torch.t(last_transition.next_state[0]).double().to(device)))
 
             state_action_values = self.policy_net(last_transition.state[0].to(device))
@@ -231,7 +230,7 @@ class DQ_learner():
         if [action] in self.available_actions(env):
             env.step(action.item())
             if env.end:    # game is over
-                next_state = None               #####  MAYBE TRY TO PUT THE WINNING STATE IN THE TRANSITION WHEN THE LAST ACTION IS 2 STEPS BEHIND (that is, when we loose)
+                next_state = None
             else:
                 # if game has not ended then opponent plays to get to the learner turn
                 opponent_action = opponent.act(env.grid)
@@ -308,6 +307,16 @@ class DQ_learner():
         state = torch.flatten(torch.from_numpy(self.get_state(env)).double().to(device))
         predicted_action = torch.argmax(self.policy_net(state))
         return predicted_action
+
+    def showQValues(self, state):
+
+        state = torch.flatten(torch.from_numpy(state).double().to(device))
+        Q =  self.policy_net(state).cpu().detach().numpy().reshape(3, 3)
+
+        figure = plt.figure()
+        axes = figure.add_subplot(111)
+        matrix_axes = axes.matshow(Q)
+        figure.colorbar(matrix_axes)
 
 
 
