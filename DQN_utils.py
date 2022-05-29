@@ -74,7 +74,22 @@ class DQ_learner():
                     seed=random.random(),
                     use_adam=False,
                     remove_buffer=False):
+        """This class provides all the necessary tools to train a deep Q network.
 
+        Args :
+            gamma (float): the discount factor.
+            eps_min (float): the minimum value of epsilon applicable in the epsilon-greedy policy.
+            eps_max (float): the maximum value of epsilon applicable in the epsilon-greedy policy.
+            decaying_time (float): the factor that controls the decaying speed of epsilon.
+            buffer_size (int): the number of moves the replay buffer can hold.
+            target_network_update (int): the tnumber of games between updates of the target network.
+            use_adam (bool): this parameter allows to choose between the adam and RMSProp optimizers.
+                Defaults to False.
+            remove_buffer (bool): this parameter allows to train the etwork with a batch size of 1.
+                Defaults to False.
+
+        
+        """
         self.gamma=gamma
         self.epsilon=np.maximum(eps_min, eps_max)
         self.decaying_time=decaying_time
@@ -309,6 +324,10 @@ class DQ_learner():
         return predicted_action
 
     def showQValues(self, state):
+        """This function allows to visualize the predicted Q values for a given state.
+        
+        Args :
+            state (np.array): the state that is passed to the agent."""
 
         state = torch.flatten(torch.from_numpy(state).double().to(device))
         Q =  self.policy_net(state).cpu().detach().numpy().reshape(3, 3)
@@ -324,12 +343,22 @@ class DQ_learner():
 ##########################################################################################
 
 class SelfLearner(DQ_learner):
+    """This class inherits from the DQ_learner class. It allows the agent to learn by self practice."""
 
     def switch_current_player(self, player):
         return 'X' if player=='O' else 'O'
 
     def train(self, number_games, env, evaluate=False):
-
+        """This function allows the network to ttrain by self practice. The main difference with the
+        train method of the parent class is that during a game, the same agent 'changes teams' after
+        each move. Essentially, the function learnt by the network is one that takes a state, and
+        outputs the best move AFTER FIGURING OUT WHOSE TURN IT IS TO PLAY.
+        
+        Args:
+            number_games (int): the size of the training loop.
+            env : the environment in which the agent plays.
+            evaluate (bool): whether to return M_opt and M_rand. Defaults to False."""
+            
         Mopt = []
         Mrand = []
         losses = []
